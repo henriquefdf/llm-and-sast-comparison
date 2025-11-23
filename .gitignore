@@ -1,0 +1,31 @@
+# Output and Results
+results/
+analysis_pipeline/output/
+analysis_pipeline/reports.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Pipeline specific
+pipeline/venv-pipeline/
+pipeline/tools/
+pipeline/logs/
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

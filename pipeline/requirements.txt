@@ -1,0 +1,7 @@
+sarif-tools
+pandas
+google-generativeai
+openai
+tqdm
+aiofiles
+semgrep
