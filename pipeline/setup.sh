@@ -1,13 +1,13 @@
 #!/bin/bash
 set -e
 
-# Configuration
-TOOLS_DIR="$(pwd)/tools"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TOOLS_DIR="$SCRIPT_DIR/tools"
 CODEQL_HOME="$TOOLS_DIR/codeql-home"
 CODEQL_ZIP="codeql-linux64.zip"
 CODEQL_URL="https://github.com/github/codeql-cli-binaries/releases/download/v2.23.5/codeql-linux64.zip"
-VENV_DIR="venv-pipeline"
-BENCHMARK_DIR="../owasp-benchmark"
+VENV_DIR="$SCRIPT_DIR/venv-pipeline"
+BENCHMARK_DIR="$SCRIPT_DIR/../owasp-benchmark"
 BENCHMARK_REPO="https://github.com/OWASP-Benchmark/BenchmarkJava.git"
 
 echo "Starting Pipeline Setup..."
@@ -53,7 +53,7 @@ fi
 source "$VENV_DIR/bin/activate"
 echo "Installing Python dependencies..."
 pip install --upgrade pip > /dev/null
-pip install -r requirements.txt
+pip install -r "$SCRIPT_DIR/requirements.txt"
 echo "Python dependencies installed."
 
 # 4. Download CodeQL Queries

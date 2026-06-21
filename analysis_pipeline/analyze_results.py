@@ -27,6 +27,19 @@ for group, cwes in CWE_GROUPS.items():
     for cwe in cwes:
         CWE_TO_GROUP[cwe] = group
 
+GROUP_SEVERITY = {
+    "Command Injection": "High",
+    "SQL Injection": "High",
+    "Path Traversal": "High",
+    "LDAP Injection": "High",
+    "XPath Injection": "High",
+    "XSS": "High",
+    "Trust Boundary": "Medium",
+    "Secure Cookie": "Medium",
+    "Weak PRNG": "Low",
+    "Weak Hash": "Low"
+}
+
 def normalize_cwe(cwe_str):
     try:
         return int(cwe_str)
@@ -165,6 +178,202 @@ def calculate_metrics(stats):
         'F1': f1,
         'Accuracy': accuracy,
         'TP': tp, 'FP': fp, 'TN': tn, 'FN': fn
+    }
+
+def analyze_rq3_synergy(raw_results, ground_truth, output_dir):
+    """RQ3: Exclusivity Rate (Synergy) between SAST vs LLM and 4 tools"""
+    sast_llm_counts = {'Both': 0, 'Only SAST': 0, 'Only LLM': 0, 'Neither': 0}
+    
+    # 4 tools exclusivity
+    tool_detection_counts = {0:0, 1:0, 2:0, 3:0, 4:0}
+    exclusive_tools = {tool: 0 for tool in raw_results.keys()}
+    
+    for tid, gt in ground_truth.items():
+        if not gt['vulnerable']:
+            continue
+            
+        target_cwe = gt['cwe']
+        
+        # Tool matches
+        matches = {}
+        for tool, results in raw_results.items():
+            matches[tool] = check_match(target_cwe, results.get(tid, []), tool)
+            
+        # SAST vs LLM match logic
+        sast_match = matches.get("CodeQL", False) or matches.get("Semgrep", False)
+        llm_match = matches.get("Gemini", False) or matches.get("GPT", False)
+        
+        if sast_match and llm_match:
+            sast_llm_counts['Both'] += 1
+        elif sast_match and not llm_match:
+            sast_llm_counts['Only SAST'] += 1
+        elif not sast_match and llm_match:
+            sast_llm_counts['Only LLM'] += 1
+        else:
+            sast_llm_counts['Neither'] += 1
+            
+        # 4 tool overlap
+        num_matches = sum(matches.values())
+        tool_detection_counts[num_matches] += 1
+        
+        # Check exclusivity
+        if num_matches == 1:
+            for t, matched in matches.items():
+                if matched:
+                    exclusive_tools[t] += 1
+                    break
+                    
+    # Plot SAST vs LLM Stacked Bar
+    df_sast_llm = pd.DataFrame([sast_llm_counts])
+    plt.figure(figsize=(10, 6))
+    colors = ['#4daf4a', '#377eb8', '#ff7f00', '#e41a1c']
+    ax = df_sast_llm.plot(kind='barh', stacked=True, color=colors, edgecolor='black', figsize=(10, 3))
+    plt.title('RQ3: Synergy SAST vs LLM (True Positives Overlap)', fontsize=15, weight='bold')
+    plt.xlabel('Number of Vulnerabilities')
+    plt.yticks([0], ['SAST vs LLM'])
+    plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.3), ncol=4)
+    for c in ax.containers:
+        ax.bar_label(c, label_type='center', color='white', weight='bold')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'rq3_synergy_sast_vs_llm.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Plot 4 tool distribution
+    dist_df = pd.DataFrame({
+        'Number of Detecting Tools': ['0 Tools', '1 Tool', '2 Tools', '3 Tools', '4 Tools'],
+        'Count': [tool_detection_counts[0], tool_detection_counts[1], tool_detection_counts[2], tool_detection_counts[3], tool_detection_counts[4]]
+    })
+    plt.figure(figsize=(8, 5))
+    ax2 = sns.barplot(data=dist_df, x='Number of Detecting Tools', y='Count', palette='viridis', edgecolor='black')
+    plt.title('RQ3: Detection Distribution across 4 Tools', fontsize=15, weight='bold')
+    for container in ax2.containers:
+        ax2.bar_label(container, fmt='%d', label_type='edge', padding=3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'rq3_overlap_distribution.png'), dpi=300)
+    plt.close()
+
+    return {
+        'sast_llm': sast_llm_counts,
+        'detection_distribution': tool_detection_counts,
+        'exclusive_tools': exclusive_tools
+    }
+
+def analyze_rq4_risk_severity(raw_results, ground_truth, output_dir):
+    """RQ4: Risk and Severity for SAST vs LLM and raw recall for all 4 tools"""
+    stats_ensemble = {
+        'High':   {'SAST': {'TP': 0, 'FN': 0}, 'LLM': {'TP': 0, 'FN': 0}},
+        'Medium': {'SAST': {'TP': 0, 'FN': 0}, 'LLM': {'TP': 0, 'FN': 0}},
+        'Low':    {'SAST': {'TP': 0, 'FN': 0}, 'LLM': {'TP': 0, 'FN': 0}},
+    }
+    
+    # Stats for individual tools
+    stats_tools = {sev: {tool: {'TP': 0, 'FN': 0} for tool in raw_results.keys()} for sev in ['High', 'Medium', 'Low']}
+    
+    for tid, gt in ground_truth.items():
+        if not gt['vulnerable']:
+            continue
+            
+        target_cwe = gt['cwe']
+        target_int = normalize_cwe(target_cwe)
+        group = CWE_TO_GROUP.get(target_int, "Other")
+        severity = GROUP_SEVERITY.get(group, None)
+        
+        if not severity:
+            continue
+            
+        matches = {}
+        for tool, results in raw_results.items():
+            matches[tool] = check_match(target_cwe, results.get(tid, []), tool)
+            if matches[tool]:
+                stats_tools[severity][tool]['TP'] += 1
+            else:
+                stats_tools[severity][tool]['FN'] += 1
+                
+        sast_match = matches.get("CodeQL", False) or matches.get("Semgrep", False)
+        llm_match = matches.get("Gemini", False) or matches.get("GPT", False)
+        
+        if sast_match: stats_ensemble[severity]['SAST']['TP'] += 1
+        else:          stats_ensemble[severity]['SAST']['FN'] += 1
+            
+        if llm_match:  stats_ensemble[severity]['LLM']['TP'] += 1
+        else:          stats_ensemble[severity]['LLM']['FN'] += 1
+        
+    ard_or_results = []
+    for sev in ['High', 'Medium', 'Low']:
+        sast_tp = stats_ensemble[sev]['SAST']['TP'] + 0.5
+        sast_fn = stats_ensemble[sev]['SAST']['FN'] + 0.5
+        llm_tp = stats_ensemble[sev]['LLM']['TP'] + 0.5
+        llm_fn = stats_ensemble[sev]['LLM']['FN'] + 0.5
+        
+        p_llm = llm_tp / (llm_tp + llm_fn)
+        p_sast = sast_tp / (sast_tp + sast_fn)
+        ard = p_llm - p_sast
+        
+        odds_llm = llm_tp / llm_fn
+        odds_sast = sast_tp / sast_fn
+        or_val = odds_llm / odds_sast
+        
+        ard_or_results.append({'Severity': sev, 'ARD': ard, 'OR': or_val})
+        
+    df_ard_or = pd.DataFrame(ard_or_results)
+    
+    # Plot ARD for SAST vs LLM
+    plt.figure(figsize=(8, 5))
+    ax1 = sns.barplot(data=df_ard_or, x='Severity', y='ARD', palette='coolwarm', edgecolor='black', order=['High', 'Medium', 'Low'])
+    plt.axhline(0, color='black', linewidth=1.2, linestyle='--')
+    plt.title('RQ4: Absolute Risk Diff. (LLM vs SAST Ensemble)', fontsize=15, weight='bold')
+    plt.ylabel('ARD (LLM Rate - SAST Rate)')
+    for container in ax1.containers:
+        ax1.bar_label(container, fmt='%.3f', label_type='edge', padding=3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'rq4_ard_sast_llm.png'), dpi=300)
+    plt.close()
+    
+    # Plot OR for SAST vs LLM
+    plt.figure(figsize=(8, 5))
+    ax2 = sns.barplot(data=df_ard_or, x='Severity', y='OR', palette='YlOrRd', edgecolor='black', order=['High', 'Medium', 'Low'])
+    plt.axhline(1, color='black', linewidth=1.2, linestyle='--')
+    plt.title('RQ4: Odds Ratio (LLM vs SAST Ensemble)', fontsize=15, weight='bold')
+    plt.ylabel('Odds Ratio (Log scale)')
+    plt.yscale('log')
+    for container in ax2.containers:
+        ax2.bar_label(container, fmt='%.2f', label_type='edge', padding=3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'rq4_or_sast_llm.png'), dpi=300)
+    plt.close()
+
+    # Calculate raw recall for all 4 tools + ensembles per severity
+    recall_results = []
+    for sev in ['High', 'Medium', 'Low']:
+        for tool in raw_results.keys():
+            tp = stats_tools[sev][tool]['TP']
+            fn = stats_tools[sev][tool]['FN']
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+            recall_results.append({'Severity': sev, 'Entity': tool, 'Recall': recall})
+            
+        # Add Ensembles
+        s_tp = stats_ensemble[sev]['SAST']['TP']
+        s_fn = stats_ensemble[sev]['SAST']['FN']
+        recall_results.append({'Severity': sev, 'Entity': 'SAST Ensemble', 'Recall': s_tp / (s_tp + s_fn) if (s_tp + s_fn) > 0 else 0})
+        
+        l_tp = stats_ensemble[sev]['LLM']['TP']
+        l_fn = stats_ensemble[sev]['LLM']['FN']
+        recall_results.append({'Severity': sev, 'Entity': 'LLM Ensemble', 'Recall': l_tp / (l_tp + l_fn) if (l_tp + l_fn) > 0 else 0})
+
+    df_recall = pd.DataFrame(recall_results)
+    plt.figure(figsize=(12, 6))
+    ax3 = sns.barplot(data=df_recall, x='Severity', y='Recall', hue='Entity', palette='Set2', edgecolor='black', order=['High', 'Medium', 'Low'])
+    plt.title('RQ4: Recall by Severity (All Tools & Ensembles)', fontsize=16, weight='bold')
+    plt.ylabel('Recall (Hit Probability)')
+    plt.ylim(0, 1.05)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'rq4_recall_by_severity.png'), dpi=300)
+    plt.close()
+
+    return {
+        'ard_or': ard_or_results,
+        'recall': df_recall.to_dict(orient='records')
     }
 
 def generate_plots(all_stats, output_dir):
@@ -395,8 +604,7 @@ def generate_plots(all_stats, output_dir):
         plt.savefig(os.path.join(output_dir, f'{tool}_group_performance.png'), dpi=300)
         plt.close()
 
-
-def write_report(all_stats, filename):
+def write_report(all_stats, filename, rq3_data=None, rq4_data=None):
     with open(filename, 'w') as f:
         f.write("Analysis Report\n")
         f.write("================\n\n")
@@ -423,6 +631,47 @@ def write_report(all_stats, filename):
                 f.write(f"    CWE-{cwe}: F1={cm['F1']:.4f} (TP={s['TP']}, FP={s['FP']})\n")
             f.write("\n" + "-"*40 + "\n\n")
 
+        if rq3_data:
+            sast_llm = rq3_data['sast_llm']
+            f.write("RQ3: Exclusivity Rate (Synergy) SAST vs LLM\n")
+            f.write("===============================================\n")
+            f.write(f"  Detected by Both (Intersection): {sast_llm['Both']}\n")
+            f.write(f"  Detected Only by SAST Ensemble: {sast_llm['Only SAST']}\n")
+            f.write(f"  Detected Only by LLM Ensemble: {sast_llm['Only LLM']}\n")
+            f.write(f"  Detected by Neither (FN in both): {sast_llm['Neither']}\n\n")
+            
+            f.write("RQ3: Cross-Tool Overlap (All 4 Tools)\n")
+            f.write("=======================================\n")
+            dist = rq3_data['detection_distribution']
+            f.write(f"  Vulnerabilities detected by 4 tools: {dist[4]}\n")
+            f.write(f"  Vulnerabilities detected by 3 tools: {dist[3]}\n")
+            f.write(f"  Vulnerabilities detected by 2 tools: {dist[2]}\n")
+            f.write(f"  Vulnerabilities detected by 1 tool: {dist[1]}\n")
+            f.write(f"  Vulnerabilities detected by 0 tools: {dist[0]}\n\n")
+            
+            f.write("  Exclusivity Breakdown (Single Tool Detections):\n")
+            for t, cnt in rq3_data['exclusive_tools'].items():
+                f.write(f"    Exclusive to {t}: {cnt}\n")
+            f.write("\n")
+            
+        if rq4_data:
+            f.write("RQ4: Risk and Severity (LLM vs SAST Ensemble)\n")
+            f.write("=============================================\n")
+            for res in rq4_data['ard_or']:
+                f.write(f"  Severity: {res['Severity']}\n")
+                f.write(f"    Absolute Risk Difference (ARD): {res['ARD']:.4f}\n")
+                f.write(f"    Odds Ratio (OR): {res['OR']:.4f}\n")
+            f.write("\n")
+            
+            f.write("RQ4: Recall by Severity (All Entities)\n")
+            f.write("======================================\n")
+            for sev in ['High', 'Medium', 'Low']:
+                f.write(f"  Severity: {sev}\n")
+                for item in rq4_data['recall']:
+                    if item['Severity'] == sev:
+                        f.write(f"    {item['Entity']}: {item['Recall']:.4f}\n")
+            f.write("\n")
+
 def main():
     print("Loading Ground Truth...")
     try:
@@ -434,11 +683,12 @@ def main():
     tools = {
         "CodeQL": os.path.join(RESULTS_DIR, "codeql", "CodeQL_detailed_results.csv"),
         "Semgrep": os.path.join(RESULTS_DIR, "semgrep", "Semgrep_detailed_results.csv"),
-        "Gemini": os.path.join(RESULTS_DIR, "gemini", "Gemini_detailed_results.csv"),
-        "GPT": os.path.join(RESULTS_DIR, "gpt", "GPT_detailed_results.csv")
+        "Gemini": os.path.join(RESULTS_DIR, "gemini", "Gemini-2.5-flash_detailed_results.csv"),
+        "GPT": os.path.join(RESULTS_DIR, "gpt", "gpt-5-mini_detailed_results.csv")
     }
     
     all_stats = {}
+    raw_results = {}
     
     for tool_name, path in tools.items():
         print(f"Analyzing {tool_name}...")
@@ -448,12 +698,21 @@ def main():
             
         stats = analyze_tool(tool_name, results, ground_truth)
         all_stats[tool_name] = stats
+        raw_results[tool_name] = results
         
     print("Generating Plots...")
     generate_plots(all_stats, OUTPUT_DIR)
     
+    rq3_data = None
+    rq4_data = None
+    if len(raw_results) == 4:
+        print("Generating RQ3 and RQ4 Plots (Synergy & Risk/Severity for 4 tools)...")
+        rq3_data = analyze_rq3_synergy(raw_results, ground_truth, OUTPUT_DIR)
+        rq4_data = analyze_rq4_risk_severity(raw_results, ground_truth, OUTPUT_DIR)
+    
+    
     print("Writing Report...")
-    write_report(all_stats, REPORTS_FILE)
+    write_report(all_stats, REPORTS_FILE, rq3_data, rq4_data)
     print("Done! Check 'output' directory.")
 
 if __name__ == "__main__":

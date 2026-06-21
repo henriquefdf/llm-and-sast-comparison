@@ -18,7 +18,7 @@ pip-delete-this-directory.txt
 
 # Pipeline specific
 pipeline/venv-pipeline/
-pipeline/tools/
+pipeline/tools/codeql-home/
 pipeline/logs/
 
 # OS specific
